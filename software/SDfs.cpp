@@ -6,15 +6,16 @@
 #ifdef _WIN32
 #include <io.h>
 #define lseek _lseek
-#define ltell _ltell
 #define read _read
 #define write _write
 #else
 #include <unistd.h>
 #endif
+#include <errno.h>
+#include <time.h>
 
-#define SECTOR_SIZE 32 //512
-#define NAME_LENGTH 10 //100
+#define SECTOR_SIZE 	512
+#define NAME_LENGTH 	100
 #define NAME_LENGTH1 (NAME_LENGTH + 1)
 
 typedef unsigned char byte;
@@ -32,7 +33,7 @@ class DirectoryEntry
 public:
 	bool writeHeaderSector(Sector &sector)
 	{
-		fprintf(stderr, "writeHeaderSector alloc: %ld, len: %ld, name_len: %ld\n", _allocated, _length, _name_len);
+		if (debugf!=0) fprintf(debugf, "writeHeaderSector alloc: %ld, len: %ld, name_len: %ld\n", _allocated, _length, _name_len);
 		sector[0] = 'S';
 		sector[1] = 'D';
 		sector[2] = 'f';
@@ -72,7 +73,7 @@ public:
 			return false;
 		_used = sectorsNeeded(_name_len, _length);
 		unsigned short check_sum = calc_checksum(sector, 10 + _name_len);
-		//fprintf(stderr, "readHeaderSector alloc: %ld, len: %ld, name_len: %ld |%s|\n", _allocated, _length, _name_len, _name);
+		//if (debugf!=0) fprintf(debugf, "readHeaderSector alloc: %ld, len: %ld, name_len: %ld |%s|\n", _allocated, _length, _name_len, _name);
 		return (((unsigned long)sector[11 + _name_len] << 8) | sector[12 + _name_len]) == check_sum;
 	}
 	unsigned short startOfData() { return _name_len + 13; }
@@ -127,30 +128,33 @@ public:
 				++_cur_sector;
 				if (_cur_sector >= _first_unused_sector)
 				{
-					fprintf(stderr, "Reading beyond used sectors at %ld\n", _cur_sector);
+					if (debugf!=0) fprintf(debugf, "Reading beyond used sectors at %ld\n", _cur_sector);
 					_more = false;
 					return;
 				}
 				if (!_blockDevice.readBlock(_cur_sector, _sector))
 				{
-					fprintf(stderr, "readBlock failed for sector %ld\n", _cur_sector);
+					if (debugf!=0) fprintf(debugf, "readBlock failed for sector %ld\n", _cur_sector);
 					_more = false;
 					return;
 				}
 				_pos_in_cur_sector = 0;
 			}
 		}
+		unsigned long length() { return _length; }
 	private:
 		AbstractBlockDevice& _blockDevice;
-		long _length;
+		unsigned long _length;
 		byte _value;
 		Sector _sector;
 		bool _more;
 		unsigned short _pos_in_cur_sector;
-		unsigned short _pos;
+		unsigned long _pos;
 		unsigned long _cur_sector;
 		unsigned long _first_unused_sector;
-	};				
+	};
+	
+	static FILE *debugf;
 
 protected:
 	unsigned long _start_sector;
@@ -168,6 +172,8 @@ private:
 		return value;
 	}
 };
+
+FILE* DirectoryEntry::debugf = 0;
 
 class AbstractDirectoryIterator : public DirectoryEntry
 {
@@ -204,33 +210,32 @@ public:
 			_found = false;
 			for (_fs.directoryIterator().init(); _fs.directoryIterator().more(); _fs.directoryIterator().next())
 			{
-				fprintf(stderr, "entry %s\n", _fs.directoryIterator().name());
+				if (debugf!=0) fprintf(debugf, "entry %s\n", _fs.directoryIterator().name());
 				if (strcmp(_fs.directoryIterator().name(), name) == 0)
 				{
-					fprintf(stderr, "Found %s\n", name);
+					if (debugf!=0) fprintf(debugf, "Found %s\n", name);
 					_found = true;
-					_length = _fs.directoryIterator().length();
 					_fs.directoryIterator().getSector(_data_read_stream.open(_fs.directoryIterator()));
 					return;
 				}
 			}
-			fprintf(stderr, "Did not find %s\n", name);
+			if (debugf!=0) fprintf(debugf, "Did not find %s\n", name);
 		}
 		bool found() { return _found; }
 		bool more() { return _data_read_stream.more(); }
 		byte value() { return _data_read_stream.value(); }
 		void next() { _data_read_stream.next(); }
+		unsigned long length() { return _data_read_stream.length(); }
 	private:
 		SDFileSystem &_fs;
 		bool _found;
 		const char* _name;
-		unsigned long _length;
 		DirectoryEntry::ReadStream _data_read_stream;
 	};
 	bool writeFile(const char* name, byte *data, long length)
 	{
 		unsigned long sectors_needed = DirectoryEntry::sectorsNeeded(strlen(name), length);
-		fprintf(stderr, "writeFile %s, sectors needed %ld\n", name, sectors_needed); 
+		if (debugf!=0) fprintf(debugf, "writeFile %s, sectors needed %ld\n", name, sectors_needed); 
 		bool existing = false;
 		bool selected = false;
 		unsigned long selected_sector;
@@ -238,14 +243,14 @@ public:
 		unsigned long selected_allocated;
 		for (_directoryIterator.init(); _directoryIterator.more(); _directoryIterator.next())
 		{
-			fprintf(stderr, "compare names %s %s\n", _directoryIterator.name(), name);
+			if (debugf!=0) fprintf(debugf, "compare names %s %s\n", _directoryIterator.name(), name);
 			if (!existing && strcmp(_directoryIterator.name(), name) == 0)
 			{
-				fprintf(stderr, "  Found file with same name, with %ld allocated\n", _directoryIterator.allocated());
+				if (debugf!=0) fprintf(debugf, "  Found file with same name, with %ld allocated\n", _directoryIterator.allocated());
 				existing = true;
 				if (sectors_needed <= _directoryIterator.allocated())
 				{
-					fprintf(stderr, "  Space enough\n");
+					if (debugf!=0) fprintf(debugf, "  Space enough\n");
 					// new version of file, still fits at current location
 					selected = true;
 					selected_sector = _directoryIterator.startSector();
@@ -255,13 +260,13 @@ public:
 				}
 				else
 				{
-					fprintf(stderr, "  Space not enough, set empty current location\n");
+					if (debugf!=0) fprintf(debugf, "  Space not enough, set empty current location\n");
 					_directoryIterator.remove();
-					if (selected) fprintf(stderr, "   %ld %ld\n",  _directoryIterator.startSector(), selected_sector);
+					if (selected && debugf!=0) fprintf(debugf, "   %ld %ld\n",  _directoryIterator.startSector(), selected_sector);
 					if (selected && _directoryIterator.startSector() == selected_sector)
 					{
 						selected_allocated = _directoryIterator.allocated();
-						fprintf(stderr, "  Adjusted allocated to %ld", selected_allocated);
+						if (debugf!=0) fprintf(debugf, "  Adjusted allocated to %ld", selected_allocated);
 					}
 					// new version does not fit at current location: set empty
 					//_directoryIterator.openModifyHeader(_directoryIterator.startSector());
@@ -272,10 +277,10 @@ public:
 			}
 			if (sectors_needed <= _directoryIterator.unused())
 			{
-				fprintf(stderr, "  Found some entry with enough space %ld\n", _directoryIterator.unused());
+				if (debugf!=0) fprintf(debugf, "  Found some entry with enough space %ld\n", _directoryIterator.unused());
 				if (!selected || _directoryIterator.unused() < selected_allocated)
 				{
-					fprintf(stderr, "  Select it\n");
+					if (debugf!=0) fprintf(debugf, "  Select it\n");
 					selected = true;
 					selected_sector = _directoryIterator.startSector();
 					selected_used = _directoryIterator.used();
@@ -286,14 +291,14 @@ public:
 		// If no sector has been selected, allocate at the end of the device
 		if (!selected)
 		{
-			fprintf(stderr,"  append at the end\n");
+			if (debugf!=0) fprintf(debugf,"  append at the end\n");
 			selected_sector = _directoryIterator.startSector();
 			selected_used = 0;
 			selected_allocated = sectors_needed;
 		}
 		if (selected_used > 0)
 		{
-			fprintf(stderr, "  Selected already has some space used: split in two\n");
+			if (debugf!=0) fprintf(debugf, "  Selected already has some space used: split in two\n");
 			_directoryIterator.openModifyHeader(selected_sector);
 			unsigned long total_allocated = _directoryIterator.allocated();
 			_directoryIterator.setAllocated(_directoryIterator.used());
@@ -302,7 +307,7 @@ public:
 			selected_used = 0;
 			selected_allocated = total_allocated - _directoryIterator.allocated();
 		}
-		fprintf(stderr, "  Write data\n");
+		if (debugf!=0) fprintf(debugf, "  Write data\n");
 		_directoryIterator.openWrite(selected_sector, name, length, selected_allocated);
 		for (int i = 0; i < length; i++)
 			_directoryIterator.append(data[i]);
@@ -310,12 +315,36 @@ public:
 		return true;
 	}
 	
+	bool removeFile(const char* name)
+	{
+		if (debugf!=0) fprintf(debugf, "removeFile %s\n", name); 
+		//bool existing = false;
+		//bool selected = false;
+		//unsigned long selected_sector;
+		//unsigned long selected_used;
+		//unsigned long selected_allocated;
+		for (_directoryIterator.init(); _directoryIterator.more(); _directoryIterator.next())
+		{
+			if (debugf!=0) fprintf(debugf, "compare names %s %s\n", _directoryIterator.name(), name);
+			if (strcmp(_directoryIterator.name(), name) == 0)
+			{
+				if (debugf!=0) fprintf(debugf, "  Found file with same name, with %ld allocated\n", _directoryIterator.allocated());
+				_directoryIterator.remove();
+				return true;
+			}
+		}
+		return true;
+	}
+
 	AbstractDirectoryIterator &directoryIterator() { return _directoryIterator; }
+
+	static FILE* debugf;
 	
 private:
 	AbstractDirectoryIterator &_directoryIterator;
 };
 
+FILE* SDFileSystem::debugf = 0;
 
 /********** Implementation for AbstractBlockDevice ***********/
 
@@ -325,14 +354,14 @@ public:
 	FileBlockDevice(int fh) : _fh(fh) {}
 	bool writeBlock(int sector, const Sector &data)
 	{
-		fprintf(stderr, "Log: writeBlock(%ld) :", sector);
-		for (int i = 0; i < SECTOR_SIZE; i++)
-			fprintf(stderr, " %02X", (unsigned short)data[i]);
+		//fprintf(stderr, "Log: writeBlock(%ld) :", sector);
+		//for (int i = 0; i < SECTOR_SIZE; i++)
+		//	fprintf(stderr, " %02X", (unsigned short)data[i]);
 		lseek(_fh, ((long)sector) * SECTOR_SIZE, SEEK_SET);
 		//fprintf(stderr, "[%ld]", ltell(_fh));
 		size_t size = write(_fh, data, SECTOR_SIZE);
 		bool correct = size == SECTOR_SIZE;
-		fprintf(stderr, " %s\n", correct ? "correct" : "failed");
+		//fprintf(stderr, " %s\n", correct ? "correct" : "failed");
 		return correct;
 	}
 	bool readBlock(int sector, Sector &data)
@@ -474,7 +503,7 @@ public:
 		{
 			if (_write_pos > 0)
 			{
-				fprintf(stderr, "Error: modified header, after append\n");
+				if (debugf!=0) fprintf(debugf, "Error: modified header, after append\n");
 				return;
 			}
 			writeHeaderSector(_sector);
@@ -486,7 +515,7 @@ public:
 			if (_start_sector <= _first_unused_sector)
 				_blockDevice.writeBlock(_start_sector, _sector);
 			else
-				fprintf(stderr, "Error: writing after used sectors at %ld\n", _start_sector);
+				if (debugf!=0) fprintf(debugf, "Error: writing after used sectors at %ld\n", _start_sector);
 			_start_sector++;
 			_write_pos = 0;
 		}
@@ -517,6 +546,8 @@ public:
 		_open_for_write = false;
 	}
 
+	static FILE* debugf;
+
 private:
 	unsigned long _next_sector;
 	bool _valid_previous_sector;
@@ -527,6 +558,8 @@ private:
 	unsigned short _write_pos;
 	unsigned long _first_unused_sector;
 };
+
+FILE* RawDirectoryIterator::debugf = 0;
 
 class CachingDirectoryIterator : public AbstractDirectoryIterator
 {
@@ -612,7 +645,7 @@ public:
 				_write_pos = 0;
 				return;
 			}
-		fprintf(stderr, "Error: openModifiyHeader on non-existing cache header at %ld\n", sector);
+		if (debugf!=0) fprintf(debugf, "Error: openModifiyHeader on non-existing cache header at %ld\n", sector);
 	}
 	virtual void clearName()
 	{
@@ -762,9 +795,322 @@ void writeFile(SDFileSystem &sdFileSystem, const char* name, byte ch, unsigned l
 	}
 	fprintf(stderr, "writeFile Verified\n");
 }
+
+class FileIntoBuffer
+{
+public:
+	FileIntoBuffer(const char *filename) : _text(0), _length(0)
+	{
+		int fh = open(filename, O_RDONLY);
+		if (fh < 0)
+		{
+			_errno = errno;
+			return;
+		}
+		_length = lseek(fh, 0L, SEEK_END);
+		lseek(fh, 0L, SEEK_SET);
+		_text = new byte[_length+2];
+		_length = read(fh, _text, _length);
+		_text[_length] = '\0';
+		close(fh);
+	}
+	~FileIntoBuffer() { delete _text; }
+	byte* content() { return _text; }
+	long length() { return _length; }
+	long error() { return _errno; }
+private:
+	long int _errno;
+	byte* _text;
+	long _length;
+};
+
+/*
+bool readFileIntoBuffer(const char *filename, byte* &text, long &length)
+{
+	int fh = open(filename, O_RDONLY);
+	if (fh < 0)
+	{
+		fprintf(stderr, "Cannot open '%s' %d\n", filename, errno);
+		return false;
+	}
+	length = lseek(fh, 0L, SEEK_END);
+	lseek(fh, 0L, SEEK_SET);
+	text = new byte[length+2];
+	length = read(fh, text, length);
+	text[length] = '\0';
+	close(fh);
+	return true;
+}
+*/
+
+class SDLog
+{
+public:
+	SDLog(SDFileSystem& sdFileSystem) : _sdFileSystem(sdFileSystem) {}
+
+private:
+	class File
+	{
+	public:
+		File() : add(false), remove(false), fd(0), fm(0), next(0) {}
+		void setNow()
+		{
+			time_t nowtime;
+			time( &nowtime );
+			struct tm *timeinfo = localtime( &nowtime );
+			fd = (1900+timeinfo->tm_year) * 10000 + (timeinfo->tm_mon+1) * 100 + timeinfo->tm_mday;
+			fm = timeinfo->tm_hour * 60 + timeinfo->tm_min;
+			
+		}
+		bool add;
+		bool remove;
+		long fd;
+		long fm;
+		char name[100];
+		File* next;
+	};
+	File *all_files = 0;
+	
+	class SDIterator
+	{
+	public:
+		SDIterator(const char *path)
+		{
+			sprintf(_buffer, "%s/sd.log", path); 
+			_f = fopen(_buffer, "rt");
+			if (_f != 0)
+				next();
+		}
+		~SDIterator() { if (_f != 0) fclose(_f); }
+		bool more() { return _f != 0; }
+		void next()
+		{
+			if (!fgets(_buffer, 199, _f))
+			{
+				fclose(_f);
+				_f = 0;
+				return;
+			}
+			int len = strlen(_buffer);
+			while (len > 0 && (_buffer[len-1] == '\n' || _buffer[len-1] == '\r'))
+				_buffer[--len] = '\0';
+			_add = false;
+			_remove = false;
+			_fd = 0;
+			_fm = 0;
+			if (strncmp(_buffer, "add ", 4) == 0)
+			{
+				_add = true;
+				_name = _buffer + 4;
+			}
+			else if (strncmp(_buffer, "remove ", 7) == 0)
+			{
+				_remove = true;
+				_name = _buffer + 7;
+			}
+			else
+			{
+				char *s = _buffer;
+			  	for (; '0' <= *s && *s <= '9'; s++)
+			  		_fd = 10*_fd + *s - 10;
+			  	if (*s == ' ')
+			  		s++;
+			  	for (; '0' <= *s && *s <= '9'; s++)
+			  		_fm = 10*_fm + *s - 10;
+			  	if (*s == ' ')
+			  		s++;
+			  	_name = s;
+			}
+		}
+		bool add() { return _add; }
+		bool remove() { return _remove; }
+		const char* name() { return _name; }
+		long fd() { return _fd; }
+		long fm() { return _fm; }
+	private:
+		bool _add;
+		bool _remove;
+		const char *_name;
+		long _fd;
+		long _fm;
 		
+		FILE *_f;
+		char _buffer[200];
+	};
+
+public:
+	
+	void process(const char *path)
+	{
+		//char fullfilename[200];
+		//sprintf(fullfilename, "%s/sd.log", path); 
+		//FILE *f = fopen(fullfilename, "rt");
+		//if (f == 0)
+		//	return;
+		File **ref_last = &all_files;
+		
+		for (SDIterator sdIterator(path); sdIterator.more(); sdIterator.next())
+		{
+			File *new_file = new File;
+			*ref_last = new_file;
+			ref_last = &new_file->next;
+			new_file->add = sdIterator.add();
+			new_file->remove = sdIterator.remove();
+			strcpy(new_file->name, sdIterator.name());
+			new_file->fd = sdIterator.fd();
+			new_file->fm = sdIterator.fm();			
+		}
+
+		char fullfilename[200];
+		sprintf(fullfilename, "%s/sd2.log", path);
+		FILE *f = fopen(fullfilename, "wt");
+		if (f == 0)
+			return;
+		for (File* file = all_files; file != 0; file = file->next)
+		{
+			if (file->remove)
+			{
+				if (_sdFileSystem.removeFile(file->name))
+					fprintf(f, "remove %s\r\n", file->name);
+			}
+			else if (file->add)
+			{
+				sprintf(fullfilename, "%s/%s", path, file->name);
+				FileIntoBuffer fileIntoBuffer(fullfilename);
+				if (fileIntoBuffer.content() == 0)
+				{
+					fprintf(stderr, "Cannot open file '%s'. Error: %d\n", fullfilename, fileIntoBuffer.error());
+				}
+				else if (_sdFileSystem.writeFile(file->name, fileIntoBuffer.content(), fileIntoBuffer.length()))
+				{
+					file->setNow();
+					fprintf(f, "%ld %ld %s\r\n", file->fd, file->fm, file->name);
+				}
+				else
+					fprintf(f, "add %s\r\n", file->name);
+			}
+			else
+				fprintf(f, "%ld %ld %s\r\n", file->fd, file->fm, file->name);
+		}
+		fclose(f);
+	}
+
+	void compare(const char *path)
+	{
+		char fullfilename[200];
+		for (SDIterator sdIterator(path); sdIterator.more(); sdIterator.next())
+		{
+			SDFileSystem::ReadStream readStream(_sdFileSystem, sdIterator.name());
+			if (!readStream.found())
+				fprintf(stdout, "File %s not stored in SD\n", sdIterator.name());
+			else
+			{
+				sprintf(fullfilename, "%s/%s", path, sdIterator.name());
+				FileIntoBuffer fileIntoBuffer(fullfilename);
+				if (fileIntoBuffer.content() == 0)
+					fprintf(stdout, "Cannot open file '%s'. Error: %d\n", fullfilename, fileIntoBuffer.error());
+				else if (fileIntoBuffer.length() != readStream.length())
+					fprintf(stdout, "Stored file %s has length %ld, not %ld\n", sdIterator.name(), readStream.length(), fileIntoBuffer.length()); 
+				else
+				{
+					bool equal = true;
+					for (int i = 0; readStream.more(); readStream.next(), i++)
+						if (readStream.value() != fileIntoBuffer.content()[i])
+						{
+							fprintf(stdout, "Content different for %s (%ld) at %d: %02X %02X\n", sdIterator.name(), fileIntoBuffer.length(), i, readStream.value(), fileIntoBuffer.content()[i]); 
+							equal = false;
+							break;
+						}
+					//if (equal)
+					//	fprintf(stdout, "Contents different for %s\n", sdIterator.name());	
+				}
+			}
+		}
+	}
+
+private:
+	SDFileSystem& _sdFileSystem;
+};
+
 int main(int argc, char *argv[])
 {
+#ifdef _WIN32	
+	int fh = open("Test.sdfs", O_RDWR|O_CREAT);
+#else
+	int fh = open("Test.sdfs", O_RDWR|O_CREAT, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
+#endif
+
+	const char *cmd = argc >= 1 ? argv[1] : "";
+	
+	FileBlockDevice fileBlockDevice(fh);
+	CachingDirectoryIterator directoryIterator(fileBlockDevice);
+	//RawDirectoryIterator directoryIterator(fileBlockDevice);
+	SDFileSystem sdFileSystem(directoryIterator);
+
+	if (strcmp(cmd, "ls") == 0)
+	{
+		AbstractDirectoryIterator& dirIterator = sdFileSystem.directoryIterator();
+		for (dirIterator.init(); dirIterator.more(); dirIterator.next())
+		{
+			fprintf(stdout, "%s : %ld\n", dirIterator.name(), dirIterator.length());
+		}
+	}
+	else if (strcmp(cmd, "cmp") == 0)
+	{
+		SDLog sdLog(sdFileSystem);
+		sdLog.compare("/run/media/frans/USB2/www");
+	}
+	else
+	{
+		SDLog sdLog(sdFileSystem);
+		sdLog.process("/run/media/frans/USB2/www");
+	}	
+/*
+	readSDLog("/run/media/frans/USB2/www");
+	writeSDLog("/run/media/frans/USB2/www");
+	return 0;
+	
+	int fh = open("/dev/mmcblk0p1", O_RDWR);
+	if (fh <= 0)
+	{
+		printf("Could not open device\n");
+		return 0;
+	}
+
+	FileBlockDevice fileBlockDevice(fh);
+	
+	Sector sector;
+	for (int i = 0; i < SECTOR_SIZE; i++)
+		sector[i] = 0;
+		
+	if (!fileBlockDevice.readBlock(0, sector))
+	{
+		printf("Failed to read first block\n");
+	}
+	else
+	{
+		for (int i = 0; i < SECTOR_SIZE; i++)
+		{
+			byte ch = sector[i];
+			if (' ' <= ch && ch < 127)
+				fprintf(stderr, " %c", ch);
+			else
+				fprintf(stderr, "%02x", (unsigned short)ch);
+			if (i % 16 == 15)
+				fprintf(stdout, "\n");
+		}
+	}
+	sector[72] = 'X';
+	if (!fileBlockDevice.writeBlock(0, sector))
+	{
+		printf("Failed to write first block\n");
+	}
+	else
+		printf("Succeeded to write first block\n");	
+	
+	close(fh);	
+*/
+/*
 #ifdef _WIN32	
 	int fh = open("Test.sdfs", O_RDWR|O_CREAT);
 #else
@@ -801,7 +1147,7 @@ int main(int argc, char *argv[])
 	fprintf(stderr, "after open\n");
 	dump_file(f);
 	fclose(f);
-	
+*/	
 /*
 	SDFileSystem::ReadStream readStream(sdFileSystem, "test.txt");
 	if (readStream.found())
