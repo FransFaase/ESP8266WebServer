@@ -198,6 +198,8 @@ protected:
 	bool _more;
 };
 
+FILE* debug1 = 0;
+
 class SDFileSystem
 {
 public:
@@ -236,6 +238,7 @@ public:
 	{
 		unsigned long sectors_needed = DirectoryEntry::sectorsNeeded(strlen(name), length);
 		if (debugf!=0) fprintf(debugf, "writeFile %s, sectors needed %ld\n", name, sectors_needed); 
+		if (debug1!=0) fprintf(debug1, "writeFile %s, sectors needed %ld:", name, sectors_needed); 
 		bool existing = false;
 		bool selected = false;
 		unsigned long selected_sector;
@@ -312,6 +315,7 @@ public:
 		for (int i = 0; i < length; i++)
 			_directoryIterator.append(data[i]);
 		_directoryIterator.close();
+		if (debug1!=0) fprintf(debug1, "\n"); 
 		return true;
 	}
 	
@@ -354,6 +358,7 @@ public:
 	FileBlockDevice(int fh) : _fh(fh) {}
 	bool writeBlock(int sector, const Sector &data)
 	{
+		if (debug1!=0) fprintf(debug1, " %d", sector);
 		//fprintf(stderr, "Log: writeBlock(%ld) :", sector);
 		//for (int i = 0; i < SECTOR_SIZE; i++)
 		//	fprintf(stderr, " %02X", (unsigned short)data[i]);
@@ -1034,20 +1039,64 @@ private:
 
 int main(int argc, char *argv[])
 {
+	const char *sdFileName = 0; // "Test.sdfs"
+	const char *filesPath = 0; // "/run/media/frans/USB2/www"
+	const char *cmd = 0;
+	int fileOpenMode = 0;
+	
+	if (argc == 4 && strcmp(argv[1], "sync") == 0)
+	{
+		cmd = argv[1];
+		sdFileName = argv[2];
+		filesPath = argv[3];
+		fileOpenMode = O_RDWR|O_CREAT;
+	}
+	else if (argc == 3 && strcmp(argv[1], "ls") == 0)
+	{
+		cmd = argv[1];
+		sdFileName = argv[2];
+		fileOpenMode = O_RDONLY;
+	}
+	else if (argc == 4 && strcmp(argv[1], "cmp") == 0)
+	{
+		cmd = argv[1];
+		sdFileName = argv[2];
+		filesPath = argv[3];
+		fileOpenMode = O_RDONLY;
+	}
+	else
+	{
+		const char *program = argv[0];
+		for (const char *s = argv[0]; *s != '\0'; s++)
+			if (*s == '/')
+				program = s+1;
+		fprintf(stdout, "%s sync <target> <source>\n%s ls <target>\n%s cmp <target> <source>\n",
+				program, program, program);
+		return 0;
+	}
+	
 #ifdef _WIN32	
-	int fh = open("Test.sdfs", O_RDWR|O_CREAT);
+	int fh = open(sdFileName, fileOpenMode);
 #else
-	int fh = open("Test.sdfs", O_RDWR|O_CREAT, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
+	int fh = open(sdFileName, fileOpenMode, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
 #endif
 
-	const char *cmd = argc >= 1 ? argv[1] : "";
-	
+	if (fh < 0)
+	{
+		fprintf(stdout, "Error: Cannot open '%s'\n", sdFileName);
+		return 0;
+	} 
 	FileBlockDevice fileBlockDevice(fh);
 	CachingDirectoryIterator directoryIterator(fileBlockDevice);
 	//RawDirectoryIterator directoryIterator(fileBlockDevice);
 	SDFileSystem sdFileSystem(directoryIterator);
 
-	if (strcmp(cmd, "ls") == 0)
+	if (strcmp(cmd, "sync") == 0)
+	{
+		SDLog sdLog(sdFileSystem);
+		sdLog.process(filesPath);
+	}	
+	else if (strcmp(cmd, "ls") == 0)
 	{
 		AbstractDirectoryIterator& dirIterator = sdFileSystem.directoryIterator();
 		for (dirIterator.init(); dirIterator.more(); dirIterator.next())
@@ -1058,13 +1107,8 @@ int main(int argc, char *argv[])
 	else if (strcmp(cmd, "cmp") == 0)
 	{
 		SDLog sdLog(sdFileSystem);
-		sdLog.compare("/run/media/frans/USB2/www");
+		sdLog.compare(filesPath);
 	}
-	else
-	{
-		SDLog sdLog(sdFileSystem);
-		sdLog.process("/run/media/frans/USB2/www");
-	}	
 /*
 	readSDLog("/run/media/frans/USB2/www");
 	writeSDLog("/run/media/frans/USB2/www");
